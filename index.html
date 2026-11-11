@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="strict-origin-when-cross-origin">
 <title>اسمع واكتب — تعلّم الإنجليزية بالاستماع والكتابة</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Readex+Pro:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap">
 <style>
@@ -522,7 +523,8 @@ kbd{font:700 12px/1 var(--mono);border:1px solid var(--line);border-radius:6px;p
   </div>
   <div class="bar"><i id="bar"></i></div>
 
-  <div class="yt" id="yt" hidden><div id="yt-slot"></div></div>
+  <div class="yt" id="yt" hidden></div>
+  <p class="info" id="yt-msg" hidden style="margin-bottom:14px"></p>
 
   <div class="card pcard">
     <div class="phead">
@@ -1424,8 +1426,17 @@ $('#v-go').addEventListener('click', async () => {
 });
 
 /* YouTube player (only when the page is served outside Claude over http/https) */
+function ytMsg(t) { const m = $('#yt-msg'); m.textContent = t; m.hidden = false; }
+function ytErr(code) {
+  const tail = ' تُقرأ الجمل الآن بالصوت الآلي.';
+  if (code === 2) return 'رابط المقطع غير صحيح. احذف المقطع وأضفه برابط صحيح.' + tail;
+  if (code === 100) return 'المقطع محذوف أو خاص، فلا يمكن تشغيله هنا.' + tail;
+  if (code === 101 || code === 150) return 'صاحب هذا المقطع منع تشغيله خارج يوتيوب. جرّب مقطعًا آخر.' + tail;
+  if (code === 153) return 'يوتيوب رفض تشغيل المقطع في هذه الصفحة (خطأ 153). عطّل مانع الإعلانات وإضافات الخصوصية لهذا الموقع ثم حدّث الصفحة.' + tail;
+  return 'تعذّر تشغيل المقطع (خطأ ' + code + ').' + tail;
+}
 const YTP = {
-  player: null, ready: false, timer: 0, loading: false, waiters: [],
+  player: null, ready: false, timer: 0, chk: 0, loading: false, waiters: [],
   api(cb) {
     if (window.YT && window.YT.Player) return cb();
     this.waiters.push(cb);
@@ -1439,16 +1450,20 @@ const YTP = {
   },
   mount(vid, onReady) {
     this.destroy();
-    $('#yt').hidden = false;
-    const slot = $('#yt'); slot.textContent = ''; const d = el('div'); d.id = 'yt-slot'; slot.append(d);
+    const box = $('#yt'); box.hidden = false;
+    const f = document.createElement('iframe');
+    f.id = 'yt-frame'; f.title = 'YouTube';
+    f.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+    f.setAttribute('allow', 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share');
+    f.setAttribute('allowfullscreen', '');
+    f.src = 'https://www.youtube.com/embed/' + vid + '?enablejsapi=1&playsinline=1&rel=0&iv_load_policy=3&origin=' + encodeURIComponent(location.origin);
+    box.append(f);
     this.api(() => {
       if (!live || !S || S.lesson.vid !== vid) return;
-      this.player = new window.YT.Player('yt-slot', {
-        videoId: vid, width: '100%', height: '100%',
-        playerVars: { playsinline: 1, rel: 0, modestbranding: 1, cc_load_policy: 0, iv_load_policy: 3, origin: location.origin },
+      this.player = new window.YT.Player('yt-frame', {
         events: {
           onReady: () => { this.ready = true; this.rate(); onReady(); },
-          onError: () => { this.ready = false; $('#yt').hidden = true; note('تعذّر تشغيل هذا المقطع، وقد يكون صاحبه منع تضمينه. سيُستخدم الصوت الآلي.'); }
+          onError: e => { this.ready = false; clearInterval(this.timer); clearTimeout(this.chk); Voice.ui(false); ytMsg(ytErr(e && e.data)); }
         }
       });
     });
@@ -1460,6 +1475,12 @@ const YTP = {
     try {
       this.player.seekTo(Math.max(0, a - 0.15), true); this.player.playVideo();
       Voice.ui(true);
+      clearTimeout(this.chk);
+      this.chk = setTimeout(() => {
+        let st = 1; try { st = this.player.getPlayerState(); } catch (e) {}
+        if (st === -1 || st === 5) { clearInterval(this.timer); Voice.ui(false); ytMsg('المتصفح منع التشغيل التلقائي. اضغط على الفيديو نفسه مرة واحدة ليبدأ، ثم استخدم زر الاستماع.'); }
+        else if (this.ready) $('#yt-msg').hidden = true;
+      }, 1800);
       this.timer = setInterval(() => {
         let t = 0; try { t = this.player.getCurrentTime(); } catch (e) {}
         if (t >= b + 0.1) { clearInterval(this.timer); try { this.player.pauseVideo(); } catch (e) {} Voice.ui(false); }
@@ -1467,11 +1488,12 @@ const YTP = {
       return true;
     } catch (e) { return false; }
   },
-  pause() { clearInterval(this.timer); if (this.ready) { try { this.player.pauseVideo(); } catch (e) {} } },
+  pause() { clearInterval(this.timer); clearTimeout(this.chk); if (this.ready) { try { this.player.pauseVideo(); } catch (e) {} } },
   destroy() {
-    clearInterval(this.timer);
+    clearInterval(this.timer); clearTimeout(this.chk);
     if (this.player) { try { this.player.destroy(); } catch (e) {} }
-    this.player = null; this.ready = false; $('#yt').hidden = true;
+    this.player = null; this.ready = false;
+    $('#yt').textContent = ''; $('#yt').hidden = true; $('#yt-msg').hidden = true;
   }
 };
 
