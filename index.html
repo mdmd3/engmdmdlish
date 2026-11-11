@@ -595,10 +595,8 @@ kbd{font:700 12px/1 var(--mono);border:1px solid var(--line);border-radius:6px;p
         <div class="seg" role="group" aria-label="الانتقال إلى الجملة التالية" data-set="auto">
           <button type="button" data-v="on">تلقائي</button><button type="button" data-v="off">يدوي</button>
         </div></div>
-      <div class="opt" id="voice-opt" hidden><span>الصوت الآلي</span>
-        <div class="seg" role="group" aria-label="الصوت" data-set="voice">
-          <button type="button" data-v="claude">صوت Claude</button><button type="button" data-v="browser">صوت المتصفح</button>
-        </div></div>
+      <div class="opt" id="voice-opt" hidden><span>صوت القارئ</span>
+        <select class="in" id="voice-sel" aria-label="صوت القارئ" style="min-width:230px"></select></div>
     </div>
   </details>
   <p class="keys"><kbd>Enter</kbd> يعيد تشغيل الجملة، وبعد إكمالها ينقلك إلى التالية.</p>
@@ -960,7 +958,7 @@ try {
     if (obj(raw.stats)) DB.stats = { sent: +raw.stats.sent || 0, words: +raw.stats.words || 0, ms: +raw.stats.ms || 0, days: obj(raw.stats.days) ? raw.stats.days : {} };
   }
 } catch (e) { /* storage unavailable: run without it */ }
-const SET = Object.assign({ mode: 'live', text: 'hidden', tr: 'show', rate: 1, auto: 'on', voice: 'claude', nextKind: 'story', stab: 'daily' }, DB.settings);
+const SET = Object.assign({ mode: 'live', text: 'hidden', tr: 'show', rate: 1, auto: 'on', voice: 'claude', cvoice: '', bvoice: '', nextKind: 'story', stab: 'daily' }, DB.settings);
 if (![0.7, 0.85, 1, 1.2].includes(SET.rate)) SET.rate = 1;
 function persist() { DB.settings = SET; try { localStorage.setItem(KEY, JSON.stringify(DB)); } catch (e) {} }
 const dayKey = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
@@ -980,17 +978,18 @@ const Voice = {
   engine() {
     const claudeOk = this.tts && !this.claudeOff;
     if (claudeOk && (SET.voice !== 'browser' || !this.browser)) return 'claude';
-    if (this.browser) return 'browser';
+    if (this.browser && (!this.claudeOff || SET.voice === 'browser')) return 'browser';
     return null;
   },
   ui(on) { listenBtn.classList.toggle('on', !!on); if (this.onUi) this.onUi(!!on); },
   speak(text, trusted) {
     const my = ++this.token, eng = this.engine();
     this.quiet();
-    if (!eng) { note('الصوت الآلي غير متاح في هذا المتصفح. اجعل النص ظاهرًا من «إعدادات أخرى» وتمرّن على الكتابة.'); this.ui(false); return; }
+    if (!eng) { note(this.claudeOff && this.browser ? CLAUDE_OFF : 'الصوت الآلي غير متاح في هذا المتصفح. اجعل النص ظاهرًا من «إعدادات أخرى» وتمرّن على الكتابة.'); this.ui(false); return; }
     this.ui(true);
     if (eng === 'browser') return this.speakBrowser(text, my);
     const opts = { rate: SET.rate };
+    if (SET.cvoice) opts.voice = SET.cvoice;
     if (trusted) opts.language = 'en';
     let p;
     try { p = this.tts.speak(text, opts); } catch (e) { p = Promise.reject(e); }
@@ -998,7 +997,7 @@ const Voice = {
       if (my !== this.token) return;
       const code = e && e.code;
       if (code === 'stopped') { this.ui(false); return; }
-      if (code === 'not_granted') { this.claudeOff = true; refreshVoiceOpt(); }
+      if (code === 'not_granted') { this.claudeOff = true; refreshVoiceOpt(); this.ui(false); note(CLAUDE_OFF); return; }
       if (this.browser) this.speakBrowser(text, my);
       else { this.ui(false); note(code === 'rate_limited' ? 'وصلت إلى حد الصوت لهذه الساعة. انتظر قليلًا ثم أعد المحاولة.' : 'تعذّر تشغيل الصوت. اضغط زر الاستماع مرة ثانية.'); }
     });
@@ -1022,11 +1021,30 @@ function pickVoice() {
   let vs = [];
   try { vs = speechSynthesis.getVoices().filter(v => /^en/i.test(v.lang)); } catch (e) {}
   if (!vs.length) return null;
+  if (SET.bvoice) { const v = vs.find(x => x.name === SET.bvoice); if (v) return v; }
   const pref = ['Google US English', 'Samantha', 'Microsoft Aria', 'Microsoft Jenny', 'Daniel', 'Karen'];
   for (const p of pref) { const v = vs.find(x => x.name.includes(p)); if (v) return v; }
   return vs.find(v => /en[-_]US/i.test(v.lang)) || vs[0];
 }
-function refreshVoiceOpt() { $('#voice-opt').hidden = !(Voice.tts && !Voice.claudeOff && Voice.browser); }
+const CLAUDE_OFF = 'صوت Claude مقفّل لهذه الصفحة. اختر أحد أصوات المتصفح من «إعدادات أخرى» إن أردت سماع الجمل.';
+let claudeVoices = ['buttery', 'airy', 'glassy', 'rounded'];
+function refreshVoiceOpt() {
+  const sel = $('#voice-sel'); sel.textContent = '';
+  const cOk = Voice.tts && !Voice.claudeOff;
+  if (Voice.claudeOff && SET.voice !== 'browser') sel.append(new Option('اختر صوتًا', ''));
+  if (cOk) claudeVoices.forEach((v, i) => sel.append(new Option('صوت Claude ' + (i + 1) + ' (' + v + ')', 'c:' + v)));
+  if (Voice.browser) {
+    sel.append(new Option('صوت المتصفح (تلقائي)', 'b:'));
+    let vs = []; try { vs = speechSynthesis.getVoices().filter(v => /^en/i.test(v.lang)); } catch (e) {}
+    const seen = new Set();
+    vs.forEach(v => { if (seen.has(v.name)) return; seen.add(v.name); sel.append(new Option(v.name + ' (' + v.lang + ')', 'b:' + v.name)); });
+  }
+  const eng = Voice.engine();
+  sel.value = eng === 'claude' ? 'c:' + (SET.cvoice || claudeVoices[0]) : eng === 'browser' ? 'b:' + (SET.bvoice || '') : '';
+  if (sel.selectedIndex < 0) sel.selectedIndex = 0;
+  $('#voice-opt').hidden = sel.options.length < 2;
+}
+if (Voice.browser) { try { speechSynthesis.addEventListener('voiceschanged', refreshVoiceOpt); } catch (e) {} }
 
 /* ---------------- Claude capabilities (all optional) ---------------- */
 let AI = null, D = null;
@@ -1034,7 +1052,11 @@ const C = window.claude && typeof window.claude.use === 'function' ? window.clau
 const IN_CLAUDE = !!C;
 const YT_OK = !IN_CLAUDE && /^https?:$/.test(location.protocol);
 if (C) {
-  Promise.resolve(C.use('tts')).then(t => { if (t) { Voice.tts = t; refreshVoiceOpt(); } }).catch(() => {});
+  Promise.resolve(C.use('tts')).then(t => {
+    if (!t) return;
+    Voice.tts = t; refreshVoiceOpt();
+    Promise.resolve(t.voices()).then(v => { if (Array.isArray(v) && v.length) { claudeVoices = v; refreshVoiceOpt(); } }).catch(() => {});
+  }).catch(() => {});
   Promise.resolve(C.use('sample')).then(s => { if (s) { AI = s; $('#tabs').hidden = false; $('#p-tr-wrap').hidden = false; $('#v-tr-wrap').hidden = false; } }).catch(() => {});
   Promise.resolve(C.use('dictation')).then(d => { if (d) setupDictation(d); }).catch(() => {});
 }
@@ -1926,6 +1948,12 @@ $$('.seg[data-set]').forEach(seg => seg.addEventListener('click', e => {
   else if (key === 'rate' || key === 'voice') { YTP.rate(); sayCurrent(); focusInput(); }
   else focusInput();
 }));
+$('#voice-sel').addEventListener('change', e => {
+  const v = e.target.value; if (!v) return;
+  if (v.startsWith('c:')) { SET.voice = 'claude'; SET.cvoice = v.slice(2); } else { SET.voice = 'browser'; SET.bvoice = v.slice(2); }
+  persist(); refreshVoiceOpt();
+  if (live && !screens.practice.hidden) { YTP.pause(); Voice.speak(curSentence().en, !S.lesson.custom); focusInput(); }
+});
 refreshSegs(); refreshVoiceOpt();
 
 /* ---------------- events ---------------- */
